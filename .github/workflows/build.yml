@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
     - uses: actions/checkout@v4
     
@@ -20,13 +20,7 @@ jobs:
         
 
     - name: Install dependencies
-      env:
-        npm_config_msvs_version: 2022
-        GYP_MSVS_VERSION: 2022
-      run: |
-        npm install -g npm@latest
-        npm install -g node-gyp
-        npm install
+      run: npm install
       
     - name: Build Windows Executable
       run: npm run build:win
