@@ -5,7 +5,7 @@
   "bin": "src/main.js",
   "scripts": {
     "start": "node src/main.js",
-    "build:mac": "pkg . --targets node18-macos-arm64 --output dist/rondapp-bridge-mac",
+    "build:mac": "pkg . --targets node18-macos-x64 --output dist/rondapp-bridge-mac",
     "build:win": "pkg . --targets node18-win-x64 --output dist/rondapp-bridge-win.exe"
   },
   "pkg": {
