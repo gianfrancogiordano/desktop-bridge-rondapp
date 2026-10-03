@@ -3,7 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const { spawn } = require('child_process');
 const { getPrinters, printDirect } = require('./printer');
 
 const PORT = 17842;
@@ -17,10 +17,12 @@ function setupWindowsSilentMode() {
   const startupPath = path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
   const vbsPath = path.join(startupPath, 'rondapp-bridge.vbs');
   
-  // 1. Install or update VBS in Startup folder
+  // 1. Install or update VBS in Startup folder for future reboots
   const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\nWshShell.Run chr(34) & "${exePath}" & Chr(34) & " --silent", 0\nSet WshShell = Nothing`;
   try {
-    fs.writeFileSync(vbsPath, vbsContent, 'utf8');
+    if (fs.existsSync(startupPath)) {
+      fs.writeFileSync(vbsPath, vbsContent, 'utf8');
+    }
   } catch (err) {}
 
   // 2. If user double-clicked manually (visible console)
@@ -37,19 +39,34 @@ function setupWindowsSilentMode() {
     console.log('====================================================');
 
     try {
-      execSync(`cscript.exe //B //Nologo "${vbsPath}"`);
-    } catch (e) {}
+      const child = spawn(exePath, ['--silent'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      });
+      child.unref();
+    } catch (e) {
+      console.log('Error launching background process:', e.message);
+    }
 
     setTimeout(() => {
       process.exit(0);
     }, 4000);
     return true; // Stop here for visible process
   }
+
+  // 3. We are in silent mode. Add a safety net for crashes.
+  process.on('uncaughtException', (err) => {
+    try {
+      fs.writeFileSync(path.join(os.homedir(), 'Desktop', 'rondapp-bridge-error.log'), err.stack || err.message);
+    } catch(e) {}
+  });
+
   return false; // Proceed normally for hidden process
 }
 
 if (setupWindowsSilentMode()) {
-  return; // Stop execution if we are transitioning to silent mode
+  return;
 }
 
 // Create HTTP server to handle both WS and HTTP (optional for future REST fallback)
