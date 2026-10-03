@@ -1,8 +1,56 @@
 const WebSocket = require('ws');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execSync } = require('child_process');
 const { getPrinters, printDirect } = require('./printer');
 
 const PORT = 17842;
+
+function setupWindowsSilentMode() {
+  if (process.platform !== 'win32') return false;
+  if (!process.pkg) return false;
+
+  const isSilent = process.argv.includes('--silent');
+  const exePath = process.execPath;
+  const startupPath = path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+  const vbsPath = path.join(startupPath, 'rondapp-bridge.vbs');
+  
+  // 1. Install or update VBS in Startup folder
+  const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\nWshShell.Run chr(34) & "${exePath}" & Chr(34) & " --silent", 0\nSet WshShell = Nothing`;
+  try {
+    fs.writeFileSync(vbsPath, vbsContent, 'utf8');
+  } catch (err) {}
+
+  // 2. If user double-clicked manually (visible console)
+  if (!isSilent) {
+    console.log('====================================================');
+    console.log('  RONDAPP PRINT BRIDGE (WINDOWS)                    ');
+    console.log('====================================================');
+    console.log('');
+    console.log('✅ Configurado para iniciar automaticamente con Windows.');
+    console.log('✅ Pasando a modo oculto (segundo plano)...');
+    console.log('');
+    console.log('Esta ventana se cerrara sola en 3 segundos, pero el');
+    console.log('puente de impresion SEGUIRA FUNCIONANDO invisible.');
+    console.log('====================================================');
+
+    try {
+      execSync(`cscript.exe //B //Nologo "${vbsPath}"`);
+    } catch (e) {}
+
+    setTimeout(() => {
+      process.exit(0);
+    }, 4000);
+    return true; // Stop here for visible process
+  }
+  return false; // Proceed normally for hidden process
+}
+
+if (setupWindowsSilentMode()) {
+  return; // Stop execution if we are transitioning to silent mode
+}
 
 // Create HTTP server to handle both WS and HTTP (optional for future REST fallback)
 const server = http.createServer((req, res) => {
@@ -58,6 +106,24 @@ wss.on('connection', (ws) => {
   });
 });
 
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    if (!process.argv.includes('--silent')) {
+      console.log('====================================================');
+      console.log('⚠️  El puente de impresion YA ESTA FUNCIONANDO en segundo plano.');
+      console.log('Esta ventana se cerrara sola en 3 segundos...');
+      console.log('====================================================');
+      setTimeout(() => process.exit(0), 3000);
+    } else {
+      process.exit(0);
+    }
+  } else {
+    console.error('[Server Error]', e);
+  }
+});
+
 server.listen(PORT, 'localhost', () => {
-  console.log(`[Rondapp PrintBridge] Running on ws://localhost:${PORT}`);
+  if (!process.argv.includes('--silent')) {
+    console.log(`[Rondapp PrintBridge] Running on ws://localhost:${PORT}`);
+  }
 });
