@@ -1,0 +1,31 @@
+{
+  "name": "bridge-desktop",
+  "version": "1.0.0",
+  "main": "src/main.js",
+  "bin": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "build:mac": "pkg . --targets node18-macos-x64 --output dist/rondapp-bridge-mac",
+    "build:win": "pkg . --targets node18-win-x64 --output dist/rondapp-bridge-win.exe"
+  },
+  "pkg": {
+    "assets": [
+      "node_modules/@thiagoelg/node-printer/lib/node_printer.node",
+      "node_modules/@thiagoelg/node-printer/build/Release/node_printer.node"
+    ],
+    "scripts": [
+      "src/**/*.js"
+    ]
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@thiagoelg/node-printer": "^0.6.2",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  }
+}
