@@ -20,8 +20,12 @@ jobs:
         
 
     - name: Install dependencies
+      env:
+        npm_config_msvs_version: 2022
+        GYP_MSVS_VERSION: 2022
       run: |
-        npm config set msvs_version 2022
+        npm install -g npm@latest
+        npm install -g node-gyp
         npm install
       
     - name: Build Windows Executable
