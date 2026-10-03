@@ -18,12 +18,11 @@ jobs:
         node-version: 18
         cache: 'npm'
         
-    - name: Install Windows Build Tools (for node-gyp)
-      run: npm install --global windows-build-tools
-      continue-on-error: true
-        
+
     - name: Install dependencies
-      run: npm install
+      run: |
+        npm config set msvs_version 2022
+        npm install
       
     - name: Build Windows Executable
       run: npm run build:win
