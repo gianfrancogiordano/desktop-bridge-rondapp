@@ -1,31 +1,73 @@
 {
-  "name": "bridge-desktop",
-  "version": "1.0.0",
+  "name": "rondapp-print-bridge",
+  "productName": "RondApp PrintBridge",
+  "version": "2.0.0",
+  "description": "Puente local de impresion para RondApp (ícono en la bandeja del sistema)",
   "main": "src/main.js",
-  "bin": "src/main.js",
-  "scripts": {
-    "start": "node src/main.js",
-    "build:mac": "pkg . --targets node18-macos-x64 --output dist/rondapp-bridge-mac",
-    "build:win": "pkg . --targets node18-win-x64 --output dist/rondapp-bridge-win.exe"
-  },
-  "pkg": {
-    "assets": [
-      "node_modules/@thiagoelg/node-printer/lib/node_printer.node",
-      "node_modules/@thiagoelg/node-printer/build/Release/node_printer.node"
-    ],
-    "scripts": [
-      "src/**/*.js"
-    ]
-  },
-  "keywords": [],
-  "author": "",
+  "author": "RondApp",
   "license": "ISC",
-  "description": "",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64",
+    "build:mac": "electron-builder --mac",
+    "build": "electron-builder"
+  },
   "dependencies": {
-    "@thiagoelg/node-printer": "^0.6.2",
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "pkg": "^5.8.1"
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.rondapp.printbridge",
+    "productName": "RondApp PrintBridge",
+    "artifactName": "RondApp-PrintBridge-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "RondApp PrintBridge"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "category": "public.app-category.business",
+      "extendInfo": {
+        "LSUIElement": true
+      }
+    }
   }
 }

@@ -1,4 +1,4 @@
-name: Build PrintBridge Executables
+name: Build PrintBridge Installers
 
 on:
   push:
@@ -8,48 +8,48 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-2022
+    runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
-    
-    - name: Use Node.js 18
+
+    - name: Use Node.js 20
       uses: actions/setup-node@v4
       with:
-        node-version: 18
+        node-version: 20
         cache: 'npm'
-        
 
+    # No native addons anymore (printing goes through PowerShell/winspool), so no node-gyp / VS toolchain needed.
     - name: Install dependencies
-      run: npm install
-      
-    - name: Build Windows Executable
+      run: npm ci
+
+    - name: Build Windows installer
       run: npm run build:win
-      
-    - name: Upload Windows Artifact
+
+    - name: Upload Windows installer
       uses: actions/upload-artifact@v4
       with:
-        name: rondapp-bridge-win
-        path: dist/rondapp-bridge-win.exe
+        name: rondapp-printbridge-windows
+        path: release/*.exe
 
   build-mac:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
-    
-    - name: Use Node.js 18
+
+    - name: Use Node.js 20
       uses: actions/setup-node@v4
       with:
-        node-version: 18
+        node-version: 20
         cache: 'npm'
-        
+
     - name: Install dependencies
-      run: npm install
-      
-    - name: Build Mac Executable
+      run: npm ci
+
+    - name: Build macOS installers
       run: npm run build:mac
-      
-    - name: Upload Mac Artifact
+
+    - name: Upload macOS installers
       uses: actions/upload-artifact@v4
       with:
-        name: rondapp-bridge-mac
-        path: dist/rondapp-bridge-mac
+        name: rondapp-printbridge-mac
+        path: release/*.dmg
