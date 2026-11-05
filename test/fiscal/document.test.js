@@ -30,7 +30,7 @@ test('texto limpio: sin "|" ni saltos, recortado al largo del modelo', () => {
   assert.equal(cleanText('Hamburguesa especial doble con tocineta', findModel('SRP-270').description), 'Hamburguesa especial doble');
 });
 
-test('factura completa: cliente, ítems (exento y gravado) y pago mixto', () => {
+test('factura completa: cliente, ítems (exento y gravado) y pago mixto (las divisas van al final)', () => {
   const cmds = buildInvoiceCommands({
     client: { rif: 'V-12345678', name: 'José Pérez' },
     extraLines: ['Orden R-014 · Mesa 5'],
@@ -46,8 +46,8 @@ test('factura completa: cliente, ítems (exento y gravado) y pago mixto', () => 
     'i00Orden R-014 · Mesa 5',
     '!000005205000002000Hamburguesa',
     ' 000001000000001000Agua',
-    '220000000070000',
-    '101',
+    '201000000044100',
+    '120',
   ]);
 });
 
@@ -66,15 +66,15 @@ test('errores antes de mandar nada: sin ítems, sin pagos, código fuera de rang
 
 test('pagos parciales que alcanzarían el total (propina, IGTF) se recortan: el último siempre cierra', () => {
   const base = { items: [{ description: 'Café', quantity: 2, unitPrice: 100, taxRate: 16 }] }; // total 200
-  // 250 en divisas (incluye propina) + 10 Bs: el parcial se recorta a 199 y el último cierra
+  // 250 en efectivo (incluye propina) + 10 por punto: el parcial se recorta a 199 y el último cierra
   assert.deepEqual(
-    buildInvoiceCommands({ ...base, payments: [{ code: '20', amount: 250 }, { code: '01', amount: 10 }] }, HKA80, S3),
-    ['!000001000000002000Café', '220000000019900', '101'],
+    buildInvoiceCommands({ ...base, payments: [{ code: '01', amount: 250 }, { code: '13', amount: 10 }] }, HKA80, S3),
+    ['!000001000000002000Café', '201000000019900', '113'],
   );
   // un parcial sin espacio se omite
   assert.deepEqual(
-    buildInvoiceCommands({ ...base, payments: [{ code: '20', amount: 199.5 }, { code: '02', amount: 5 }, { code: '01', amount: 1 }] }, HKA80, S3),
-    ['!000001000000002000Café', '220000000019900', '101'],
+    buildInvoiceCommands({ ...base, payments: [{ code: '03', amount: 199.5 }, { code: '02', amount: 5 }, { code: '01', amount: 1 }] }, HKA80, S3),
+    ['!000001000000002000Café', '203000000019900', '101'],
   );
 });
 
@@ -85,3 +85,15 @@ test('total esperado con tasas excluidas suma el IVA', () => {
   assert.equal(expectedTotal({ items, pricesIncludeTax: false }, S3), 282);
 });
 
+
+test('IGTF (flag 50 = 01): divisas al final, que pagan el resto y su IGTF, y cierre con 199', () => {
+  const doc = { items: [{ description: 'Café', quantity: 1, unitPrice: 116, taxRate: 16 }], payments: [{ code: '20', amount: 103 }, { code: '01', amount: 16 }] };
+  assert.deepEqual(buildInvoiceCommands(doc, HKA80, S3, { igtfMode: true }), ['!000001160000001000Café', '201000000001600', '120', '199']);
+});
+
+test('máquina sin modo IGTF (flag 50 = 00): los códigos de divisas se rechazan antes de mandar nada', () => {
+  const doc = { items: [{ description: 'Café', quantity: 1, unitPrice: 116, taxRate: 16 }], payments: [{ code: '20', amount: 116 }], finalize199: true };
+  assert.throws(() => buildInvoiceCommands(doc, HKA80, S3, { igtfMode: false }), /no está en modo IGTF/);
+  // Sin divisas: no se cierra con 199 aunque la configuración vieja lo pidiera (manda el flag)
+  assert.deepEqual(buildInvoiceCommands({ ...doc, payments: [{ code: '01', amount: 116 }] }, HKA80, S3, { igtfMode: false }), ['!000001160000001000Café', '101']);
+});

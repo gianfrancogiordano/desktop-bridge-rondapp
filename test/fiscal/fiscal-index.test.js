@@ -20,6 +20,17 @@ test('readFiscalStatus con el simulador: datos para configurar la impresora en e
   assert.equal(closed, true); // el puerto se libera siempre
 });
 
+test('readFiscalStatus informa el modo IGTF de la máquina (flag 50), su tasa y el flag 63', async () => {
+  const on = await readFiscalStatus({ port: 'COM3', openTransport: async () => new HkaSimulator({ igtfMode: true }) });
+  assert.deepEqual(on.igtf, { mode: true, rate: 3 });
+  assert.deepEqual(on.flags, { 50: '01', 63: '17' });
+  const off = await readFiscalStatus({ port: 'COM3', openTransport: async () => new HkaSimulator({ igtfMode: false }) });
+  assert.equal(off.igtf.mode, false);
+  // Firmware que no informa los flags (formato v8.3): no se sabe
+  const old = await readFiscalStatus({ port: 'COM3', openTransport: async () => new HkaSimulator() });
+  assert.deepEqual(old.igtf, { mode: null, rate: null });
+});
+
 test('el puerto se libera aunque la máquina no responda', async () => {
   const sim = new HkaSimulator({ silent: true });
   let closed = false;

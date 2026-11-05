@@ -51,18 +51,67 @@ function parseS1(text) {
 }
 
 /**
- * S3: the three programmed tax rates. Each line = type (1 char) + rate (4 digits, 2 decimals), e.g. "21600"
- * → type "2", 16.00 %. Lines after the third one are system flags. What each type means (included /
- * excluded) is NOT documented for the HKA-80: kept raw until the spike (validar).
+ * S3: tax rates, IGTF and user flags. Two layouts:
+ *  - v8.3 (DT-230 tables): LF-separated lines, each type (1 char) + rate (4 digits, 2 decimals), e.g. "21600".
+ *  - v8.5 (2022, HKA-80 by direct protocol, Tabla 53): fixed width, no separators —
+ *    "S3" · type+rate ×3 · IGTF type (pos 17) + rate (18–21) · flags from pos 22, two digits each (flag 00, 01…).
+ * The type digit is contradictory in the manual (Tabla 19: 1 excluded / 2 included; Tabla 53: the reverse):
+ * kept raw, never used to guess whether prices include the tax (validar en el spike).
  */
 function parseS3(text) {
   const fields = stripTag(splitFields(text), 'S3');
-  const taxes = [];
-  for (let i = 0; i < 3; i++) {
-    const m = /^(\d)(\d{4})$/.exec((fields[i] || '').trim());
-    taxes.push(m ? { slot: i + 1, type: m[1], rate: Number(m[2]) / 100, raw: fields[i] } : { slot: i + 1, type: null, rate: null, raw: fields[i] ?? '' });
+  const rate = (raw) => {
+    const m = /^(\d)(\d{4})$/.exec(String(raw || '').trim());
+    return m ? { type: m[1], rate: Number(m[2]) / 100 } : { type: null, rate: null };
+  };
+  const lines = fields.map(f => f.trim());
+  const lfLayout = lines.slice(0, 3).every(f => /^\d{5}$/.test(f));
+  let rates, igtfRaw = '', flagsText = '';
+  if (lfLayout) {
+    rates = lines.slice(0, 3);
+    if (/^\d{5}$/.test(lines[3] || '')) { igtfRaw = lines[3]; flagsText = lines.slice(4).join(''); }
+    else flagsText = lines.slice(3).join('');
+  } else {
+    const c = lines.join('').replace(/\s+/g, '');
+    rates = [c.slice(0, 5), c.slice(5, 10), c.slice(10, 15)];
+    igtfRaw = c.slice(15, 20);
+    flagsText = c.slice(20);
   }
-  return { taxes, flags: fields.slice(3).filter(f => f !== ''), fields };
+  const taxes = rates.map((raw, i) => ({ slot: i + 1, ...rate(raw), raw: raw ?? '' }));
+  const igtf = rate(igtfRaw);
+  return {
+    taxes,
+    igtf: { type: igtf.type, rate: igtf.rate, raw: igtfRaw },
+    /** flags[n] = two-digit value of flag n ("00", "01"…), only the ones the printer sent */
+    flags: /^\d+$/.test(flagsText) ? Object.fromEntries((flagsText.match(/\d{2}/g) || []).map((v, n) => [n, v])) : {},
+    fields,
+  };
+}
+
+/** Flag 50 = 01 → IGTF mode (payments 20–24 charge IGTF, documents close with "199"); 00 → off; unknown → null */
+function igtfModeOf(s3) {
+  const f = s3?.flags?.[50];
+  return f === '01' ? true : f === '00' ? false : null;
+}
+
+/**
+ * S2 / S2E / S21–S23 (manual v8.3, p. 59–62): what the printer has accumulated in the document that is open
+ * right now — S2 all of it, S2E the exempt part, S2n tax rate n. Amounts have 11 integers + 2 decimals, in
+ * Bs, as the printer computed them (its own rounding). With no document open every amount is zero.
+ * Fields: base · tax · (future use) · item count · amount to pay · payments made · document type (S2 only).
+ */
+function parseS2(text, tag = 'S2') {
+  const fields = stripTag(splitFields(text), tag).map(f => f.trim());
+  const amount = (i) => (num(fields[i]) === null ? null : num(fields[i]) / 100);
+  return {
+    base: amount(0),
+    tax: amount(1),
+    items: num(fields[3]),
+    toPay: amount(4),
+    payments: num(fields[5]),
+    docType: num(fields[6]),
+    fields,
+  };
 }
 
 /** SV: model and country (layout not documented for the HKA-80; validar). */
@@ -71,4 +120,50 @@ function parseSV(text) {
   return { model: fields[0] || null, country: fields[1] || null, fields };
 }
 
-module.exports = { parseS1, parseS3, parseSV, printerDateTime, S1_FIELDS };
+/**
+ * U0X / U0Z (v8.5, Tablas 62–65): the X (or Z) report as data, without printing. Fixed width by direct
+ * protocol: next Z (4) · last Z date (6) · time (4) · last invoice (8) · its date (6) · time (4) · last NC (8)
+ * · last ND (8) · last non-fiscal (8), then the accumulators (18 digits = 16 + 2 decimals, Bs) from pos 56:
+ * exempt, base/tax of rates 1–3 (sales, then ND, then NC)… and, from index 21, base IGTF (434), perceived tax
+ * of sales/ND/NC, IGTF value (506), base and IGTF of NC (524, 542) and of ND (560, 578). The IGTF fields only
+ * come with the extended frames (flag 63); without them `igtf` is null.
+ */
+function parseU0X(text, tag = 'U0X') {
+  let c = String(text || '');
+  if (c.startsWith(tag)) c = c.slice(tag.length);
+  c = c.replace(/[\n\r ]/g, '');
+  const AMOUNT = 18, START = 56;
+  const amount = (k) => {
+    const raw = c.slice(START + AMOUNT * k, START + AMOUNT * (k + 1));
+    return /^\d{18}$/.test(raw) ? Number(raw) / 100 : null;
+  };
+  const pair = (b, v) => {
+    const base = amount(b), value = amount(v);
+    return base === null || value === null ? null : { base, igtf: value };
+  };
+  /** Exempt + base/tax of the three rates, from amount index `k` (sales 0, debit notes 7, credit notes 14) */
+  const block = (k) => {
+    const values = Array.from({ length: 7 }, (_, i) => amount(k + i));
+    if (values.some(v => v === null)) return null;
+    return { exempt: values[0], rates: [1, 2, 3].map((slot, i) => ({ slot, base: values[1 + 2 * i], tax: values[2 + 2 * i] })) };
+  };
+  const ddmmyy = (s) => (/^\d{6}$/.test(s) ? `20${s.slice(4, 6)}-${s.slice(2, 4)}-${s.slice(0, 2)}` : null);
+  return {
+    /** U0Z read before printing the Z: the number of the Z about to be printed */
+    nextZ: num(c.slice(0, 4)),
+    lastZDate: ddmmyy(c.slice(4, 10)),
+    lastInvoice: num(c.slice(14, 22)),
+    lastInvoiceDate: ddmmyy(c.slice(22, 28)),
+    lastCreditNote: num(c.slice(32, 40)),
+    lastDebitNote: num(c.slice(40, 48)),
+    sales: block(0),
+    debitNotes: block(7),
+    creditNotes: block(14),
+    igtf: c.length >= START + AMOUNT * 30
+      ? { invoices: pair(21, 25), creditNotes: pair(26, 27), debitNotes: pair(28, 29) }
+      : null,
+    length: c.length,
+  };
+}
+
+module.exports = { parseS1, parseS2, parseS3, parseSV, parseU0X, igtfModeOf, printerDateTime, S1_FIELDS };

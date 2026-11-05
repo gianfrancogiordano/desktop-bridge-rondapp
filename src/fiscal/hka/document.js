@@ -85,9 +85,9 @@ function expectedTotal(doc, s3Taxes) {
  * @param {{ slot: number, rate: number|null }[]} s3Taxes
  * @returns {string[]}
  */
-function buildInvoiceCommands(doc, model, s3Taxes) {
+function buildInvoiceCommands(doc, model, s3Taxes, opts = {}) {
   checkDocument(doc, 'La factura');
-  return [...clientLines(doc, model), ...extraLines(doc, model), ...itemLines(doc, model, s3Taxes, TAX_CHARS), ...paymentLines(doc, model, s3Taxes)];
+  return [...clientLines(doc, model), ...extraLines(doc, model), ...itemLines(doc, model, s3Taxes, TAX_CHARS), ...paymentLines(doc, model, s3Taxes, opts)];
 }
 
 /**
@@ -98,7 +98,7 @@ function buildInvoiceCommands(doc, model, s3Taxes) {
  *   reference: { number: number, date: string (ISO, the invoice date), serial: string }, comment?: string
  * @param {'official'|'colon'} variant
  */
-function buildCreditNoteCommands(doc, model, s3Taxes, variant = 'official') {
+function buildCreditNoteCommands(doc, model, s3Taxes, variant = 'official', opts = {}) {
   checkDocument(doc, 'La nota de crédito');
   const ref = doc.reference || {};
   const number = Number(ref.number);
@@ -119,7 +119,7 @@ function buildCreditNoteCommands(doc, model, s3Taxes, variant = 'official') {
     ...reference,
     ...(comment ? ['A' + comment] : []),
     ...itemLines(doc, model, s3Taxes, CREDIT_TAX_CHARS),
-    ...paymentLines(doc, model, s3Taxes),
+    ...paymentLines(doc, model, s3Taxes, opts),
   ];
 }
 
@@ -162,22 +162,38 @@ function itemLines(doc, model, s3Taxes, taxChars) {
   });
 }
 
+/** Payment codes 20–24 = foreign currency ("Divisa 1–5"): they charge IGTF and need flag 50 = 01 (v8.5) */
+const isForeignCode = (code) => Number(code) >= 20 && Number(code) <= 24;
+
 /**
  * Payments. What the customer paid can exceed the printer's total (tip, IGTF, rounding). A partial
  * payment that reaches the total CLOSES the document early, so partials are capped below the total and
  * the last one ("1NN") always pays the rest and closes it.
+ * IGTF (v8.5, Tabla 73): the printer charges 3 % of what each foreign-currency payment covers, so those go
+ * LAST: the final one pays the rest of the document and the printer adds its IGTF. With flag 50 = 01 every
+ * document closes with "199"; with flag 50 = 00 the printer rejects codes 20–24, so they are refused here.
+ * @param {{ igtfMode?: boolean|null }} opts  flag 50 read from S3 (null = unknown: use doc.finalize199)
  */
-function paymentLines(doc, model, s3Taxes) {
+function paymentLines(doc, model, s3Taxes, opts = {}) {
   const cmds = [];
   const maxCode = model.paymentMethods || 16;
   const total = expectedTotal(doc, s3Taxes);
+  const igtfMode = opts.igtfMode ?? null;
   let accumulated = 0;
-  doc.payments.forEach((p, i) => {
-    const code = String(p.code ?? '').padStart(2, '0');
-    if (!/^\d{2}$/.test(code) || Number(code) < 1 || Number(code) > maxCode) {
+  const payments = doc.payments.map((p) => ({ ...p, code: String(p.code ?? '').padStart(2, '0') }));
+  for (const p of payments) {
+    if (!/^\d{2}$/.test(p.code) || Number(p.code) < 1 || Number(p.code) > maxCode) {
       throw new FiscalDocumentError('bad_payment_code', `Medio de pago ${p.code} inválido para esta impresora (01–${String(maxCode).padStart(2, '0')})`);
     }
-    if (i === doc.payments.length - 1) {
+    if (igtfMode === false && isForeignCode(p.code)) {
+      throw new FiscalDocumentError('igtf_off', `La máquina no está en modo IGTF (flag 50 en 00): no acepta el medio de pago ${p.code} (divisas). Usa un código entre 01 y 19.`);
+    }
+  }
+  // Moneda nacional primero, divisas al final (orden estable)
+  const ordered = [...payments.filter(p => !isForeignCode(p.code)), ...payments.filter(p => isForeignCode(p.code))];
+  ordered.forEach((p, i) => {
+    const code = p.code;
+    if (i === ordered.length - 1) {
       cmds.push('1' + code);
       return;
     }
@@ -187,7 +203,7 @@ function paymentLines(doc, model, s3Taxes) {
     accumulated += amount;
     cmds.push('2' + code + formatPayment(amount));
   });
-  if (doc.finalize199) cmds.push('199'); // IGTF mode (flag 50), from third-party sources: validar en el spike
+  if (igtfMode ?? doc.finalize199) cmds.push('199'); // mandatory with flag 50 = 01 (v8.5, §24)
   return cmds;
 }
 
