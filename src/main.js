@@ -1,10 +1,11 @@
-const { app, Tray, Menu, nativeImage, Notification, shell } = require('electron');
+const { app, Tray, Menu, nativeImage, Notification, shell, dialog } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const logger = require('./logger');
 const { getPrinters, printDirect } = require('./printer');
 const { startServer, PORT } = require('./server');
 const { cleanupLegacyBridge } = require('./legacy');
+const fiscal = require('./fiscal');
 
 const PRINTER_REFRESH_MS = 30000;
 const SERVER_RETRY_MS = 10000;
@@ -15,6 +16,7 @@ let retryTimer = null;
 let printers = [];
 let clients = 0;
 let lastJob = null;
+let serialPorts = []; // COM ports for the fiscal printer test (Windows)
 const state = { server: 'starting', error: '' }; // server: starting | running | error
 
 // ── Single instance ─────────────────────────────────────────────────────────
@@ -85,6 +87,40 @@ async function testPrint(name) {
   refreshMenu();
 }
 
+/** "Probar impresora fiscal": read-only status of the printer on `port` (nothing fiscal is emitted). */
+async function testFiscal(port) {
+  const dir = logger.getDir() || app.getPath('userData');
+  try {
+    const r = await fiscal.readFiscalStatus({ port, workDir: app.getPath('userData') });
+    const file = path.join(dir, `fiscal-${port}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+    try { fs.writeFileSync(file, JSON.stringify(r, null, 2)); } catch (_) { /* the dialog still shows the data */ }
+    logger.info(`Fiscal test ok -> ${port}`, r);
+    const taxes = (r.taxes || []).map((t) => (t.rate === null ? `tasa ${t.slot}: ?` : `tasa ${t.slot}: ${t.rate}% (tipo ${t.type})`)).join(' · ');
+    await dialog.showMessageBox({
+      type: r.status && r.status.ready ? 'info' : 'warning',
+      title: 'Impresora fiscal',
+      message: r.status && r.status.ready ? `Impresora fiscal lista en ${port}` : `Impresora fiscal en ${port}: ${r.status ? r.status.error.message : 'estado desconocido'}`,
+      detail: [
+        `Modelo: ${r.reportedModel || '?'}${r.modelKnown ? ` (${r.model})` : ' (no reconocido)'}`,
+        `Serial: ${r.serial || '?'}   RIF: ${r.rif || '?'}`,
+        `Última factura: ${r.lastInvoice ?? '?'}   Último Z: ${r.zReports ?? '?'}`,
+        `Estado: ${r.status ? `${r.status.mode} / ${r.status.state}` : '?'}`,
+        taxes,
+        '',
+        `Se guardó el detalle en la carpeta de logs (${path.basename(file)}): envíalo a soporte de RondApp.`,
+      ].join('\n'),
+    });
+  } catch (err) {
+    logger.error(`Fiscal test failed -> ${port}:`, err);
+    await dialog.showMessageBox({ type: 'error', title: 'Impresora fiscal', message: `No se pudo leer la impresora fiscal en ${port}`, detail: err.message || String(err) });
+  }
+}
+
+async function refreshSerialPorts() {
+  try { serialPorts = await fiscal.listSerialPorts(); } catch (err) { serialPorts = []; logger.warn('No se pudieron listar los puertos COM:', err.message); }
+  refreshMenu();
+}
+
 function notify(title, body) {
   try { if (Notification.isSupported()) new Notification({ title: `RondApp PrintBridge — ${title}`, body }).show(); } catch (_) { /* ignore */ }
 }
@@ -109,6 +145,12 @@ function buildMenu() {
     : lastJob.ok ? `Último trabajo: OK → ${lastJob.printer}`
       : `Último trabajo: ERROR → ${lastJob.printer}`;
 
+  // Only the port the user picks is opened: other COM devices (scales…) must not receive bytes
+  const fiscalItems = serialPorts.length
+    ? serialPorts.map((p) => ({ label: `${p.port} — ${p.name}${p.likelyHka ? ' (impresora fiscal HKA)' : ''}`, click: () => testFiscal(p.port) }))
+    : [{ label: process.platform === 'win32' ? 'No se detectaron puertos COM' : 'Solo disponible en Windows', enabled: false }];
+  fiscalItems.push({ type: 'separator' }, { label: 'Buscar puertos de nuevo', click: () => refreshSerialPorts() });
+
   return Menu.buildFromTemplate([
     { label: `RondApp PrintBridge v${app.getVersion()}`, enabled: false },
     { label: statusLabel(), enabled: false },
@@ -116,6 +158,7 @@ function buildMenu() {
     { type: 'separator' },
     { label: `Impresoras (${printers.length})`, submenu: printerItems },
     { label: 'Imprimir página de prueba', submenu: testItems },
+    { label: 'Probar impresora fiscal', submenu: fiscalItems },
     { label: 'Actualizar impresoras', click: () => refreshPrinters() },
     { label: jobLabel, enabled: false },
     { type: 'separator' },
@@ -141,6 +184,7 @@ function refreshMenu() {
 async function refreshPrinters() {
   printers = await getPrinters();
   refreshMenu();
+  refreshSerialPorts();
 }
 
 // ── Server lifecycle ────────────────────────────────────────────────────────

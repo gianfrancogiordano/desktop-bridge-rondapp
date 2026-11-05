@@ -1,7 +1,7 @@
 {
   "name": "rondapp-print-bridge",
   "productName": "RondApp PrintBridge",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Puente local de impresion para RondApp (ícono en la bandeja del sistema)",
   "main": "src/main.js",
   "author": "RondApp",
@@ -10,7 +10,8 @@
     "start": "electron .",
     "build:win": "electron-builder --win --x64 --publish never",
     "build:mac": "electron-builder --mac --publish never",
-    "build": "electron-builder --publish never"
+    "build": "electron-builder --publish never",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "ws": "^8.22.0"

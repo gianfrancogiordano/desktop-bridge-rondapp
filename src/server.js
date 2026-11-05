@@ -2,6 +2,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const logger = require('./logger');
 const { getPrinters, printDirect } = require('./printer');
+const fiscal = require('./fiscal');
 
 const PORT = 17842;
 // Chrome resolves `localhost` to ::1 first and falls back to 127.0.0.1. We listen on BOTH loopbacks so an
@@ -65,6 +66,65 @@ function startServer({ version, workDir, onPrint, onClients }) {
             send({ type: 'PONG', version });
           } else if (payload.type === 'LIST_PRINTERS') {
             send({ type: 'PRINTERS', list: await getPrinters() });
+          } else if (payload.type === 'FISCAL_LIST_PORTS') {
+            // COM ports, likely HKA fiscal printers first (USB VID/PID)
+            try {
+              send({ type: 'FISCAL_PORTS', id: jobId, list: await fiscal.listSerialPorts() });
+            } catch (e) {
+              send({ type: 'FISCAL_ERROR', id: jobId, error: e.message || String(e) });
+            }
+          } else if (payload.type === 'FISCAL_STATUS') {
+            // Read-only: status, model, serial, RIF, counters and tax rates. Nothing fiscal is emitted.
+            if (!payload.port) {
+              send({ type: 'FISCAL_ERROR', id: jobId, error: 'Falta el puerto de la impresora fiscal' });
+              return;
+            }
+            try {
+              const result = await fiscal.readFiscalStatus({ port: payload.port, workDir });
+              logger.info(`FISCAL_STATUS ok -> ${payload.port} model=${result.model} serial=${result.serial} last=${result.lastInvoice}`);
+              send({ type: 'FISCAL_STATUS_OK', id: jobId, result });
+            } catch (e) {
+              logger.error(`FISCAL_STATUS failed -> ${payload.port}:`, e);
+              send({ type: 'FISCAL_ERROR', id: jobId, error: e.message || String(e), code: e.code || null });
+            }
+          } else if (payload.type === 'FISCAL_INVOICE') {
+            // Prints an invoice on the fiscal printer. `emitted` in errors: false = safe to retry,
+            // 'unknown' = someone must check the paper before retrying (an invoice cannot be undone).
+            if (!payload.port || !payload.document) {
+              send({ type: 'FISCAL_ERROR', id: jobId, error: 'Faltan el puerto o la factura', emitted: false });
+              return;
+            }
+            try {
+              const result = await fiscal.emitFiscalInvoice({ port: payload.port, document: payload.document, workDir });
+              logger.info(`FISCAL_INVOICE ok -> ${payload.port} nº ${result.number} serial=${result.serial}`);
+              send({ type: 'FISCAL_INVOICE_OK', id: jobId, result });
+            } catch (e) {
+              logger.error(`FISCAL_INVOICE failed -> ${payload.port}:`, e);
+              send({ type: 'FISCAL_ERROR', id: jobId, error: e.message || String(e), code: e.code || null, emitted: e.emitted ?? 'unknown' });
+            }
+          } else if (payload.type === 'FISCAL_CREDIT_NOTE') {
+            // Credit note for an invoice of this printer family; same `emitted` rules as FISCAL_INVOICE
+            if (!payload.port || !payload.document) {
+              send({ type: 'FISCAL_ERROR', id: jobId, error: 'Faltan el puerto o la nota de crédito', emitted: false });
+              return;
+            }
+            try {
+              const result = await fiscal.emitFiscalCreditNote({ port: payload.port, document: payload.document, variant: payload.variant, workDir });
+              logger.info(`FISCAL_CREDIT_NOTE ok -> ${payload.port} nº ${result.number} serial=${result.serial} variant=${result.variant}`);
+              send({ type: 'FISCAL_CREDIT_NOTE_OK', id: jobId, result });
+            } catch (e) {
+              logger.error(`FISCAL_CREDIT_NOTE failed -> ${payload.port}:`, e);
+              send({ type: 'FISCAL_ERROR', id: jobId, error: e.message || String(e), code: e.code || null, emitted: e.emitted ?? 'unknown' });
+            }
+          } else if (payload.type === 'FISCAL_REPORT') {
+            try {
+              const result = await fiscal.runFiscalReport({ port: payload.port, kind: payload.kind, workDir });
+              logger.info(`FISCAL_REPORT ${payload.kind} ok -> ${payload.port}`);
+              send({ type: 'FISCAL_REPORT_OK', id: jobId, result });
+            } catch (e) {
+              logger.error(`FISCAL_REPORT ${payload.kind} failed -> ${payload.port}:`, e);
+              send({ type: 'FISCAL_ERROR', id: jobId, error: e.message || String(e), code: e.code || null });
+            }
           } else if (payload.type === 'PRINT') {
             const printData = payload.data || payload.bytes;
             if (!payload.printerName || !printData) {
