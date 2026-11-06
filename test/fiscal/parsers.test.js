@@ -1,12 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseS1, parseS3, parseSV, parseU0X, igtfModeOf } = require('../../src/fiscal/hka/parsers');
+const { parseS1, parseS3, parseSV, parseU0X, igtfModeOf, withZCounter } = require('../../src/fiscal/hka/parsers');
 const { findModel, SAFE_DEFAULT } = require('../../src/fiscal/hka/models');
 
 const LF = '\n';
 
 test('S1: contadores, RIF, serial y fecha/hora de la máquina', () => {
-  const s1 = parseS1(['S101', '00000000000150000', '00000041', '00003', '00000000', '00000', '00000002', '00000', '00000010', '00000', '0000', '0012', 'J123456789', 'Z1F1234567', '153000', '041126'].join(LF));
+  const s1 = parseS1(['S101', '00000000000150000', '00000041', '00003', '00000000', '00000', '00000002', '00000', '00000010', '00000', '0012', '0000', 'J123456789', 'Z1F1234567', '153000', '041126'].join(LF));
   assert.equal(s1.cashier, '01');
   assert.equal(s1.dailySales, 1500);
   assert.equal(s1.lastInvoice, 41);
@@ -79,4 +79,41 @@ test('U0X v8.5: IGTF acumulado de facturas, NC y ND (posiciones 434/506, 524/542
   assert.deepEqual(u.igtf, { invoices: { base: 100, igtf: 3 }, creditNotes: { base: 50, igtf: 1.5 }, debitNotes: { base: 0, igtf: 0 } });
   // Sin tramas ampliadas (flag 63): no hay IGTF
   assert.equal(parseU0X('U0X' + head + amounts.slice(0, 21).map(amt).join('')).igtf, null);
+});
+
+test('SV con el código del manual v8.5: Z7C = HKA-80, ZZP = PP9-PLUS (no PP9)', () => {
+  assert.equal(findModel(parseSV(['SVZ7C', 'VE'].join(LF)).model).id, 'HKA-80');
+  assert.equal(findModel('Z1F').id, 'SRP-812');
+  assert.equal(findModel('ZZP').id, 'PP9-PLUS');
+  assert.equal(findModel('ZZH').id, 'PP9');
+  assert.equal(findModel('PP9 PLUS').id, 'PP9-PLUS');
+  assert.equal(findModel('Z7C').paymentMethods, 24);
+});
+
+test('S1 de los modelos chicos (SRP-350, HKA-112…): 14 campos, las notas de crédito al final', () => {
+  const s1 = parseS1(['S101', '00000000000150000', '00000041', '00003', '00000010', '00000', '0012', '0000', 'J123456789', 'Z1B1234567', '153000', '041126', '00000002', '00000'].join(LF));
+  assert.equal(s1.layout, 'small');
+  assert.equal(s1.lastInvoice, 41);
+  assert.equal(s1.zReports, 12);
+  assert.equal(s1.lastCreditNote, 2);
+  assert.equal(s1.serial, 'Z1B1234567');
+  assert.equal(s1.printerDateTime, '2026-11-04T15:30:00');
+});
+
+test('withZCounter: el próximo Z de U0X decide cuál contador de S1 es el de los Z', () => {
+  const s1 = { zReports: 0, fiscalMemoryReports: 12 };
+  assert.equal(withZCounter(s1, 13).zReports, 12);
+  assert.equal(withZCounter(s1, 13).zSwapped, true);
+  assert.equal(withZCounter({ zReports: 12, fiscalMemoryReports: 0 }, 13).zReports, 12);
+  assert.equal(withZCounter(s1, null).zReports, 0);
+});
+
+test('U0X con tramas reducidas (montos de 13 dígitos)', () => {
+  const head = '0013' + '041126' + '1530' + '00000041' + '041126' + '1530' + '00000002' + '00000000' + '00000010';
+  const amounts = Array.from({ length: 21 }, (_, k) => (k === 1 ? 100 : k === 2 ? 16 : 0));
+  const u = parseU0X('U0X' + head + amounts.map((v) => String(v * 100).padStart(13, '0')).join(''));
+  assert.equal(u.amountWidth, 13);
+  assert.equal(u.nextZ, 13);
+  assert.deepEqual(u.sales.rates[0], { slot: 1, base: 100, tax: 16 });
+  assert.equal(u.igtf, null);
 });

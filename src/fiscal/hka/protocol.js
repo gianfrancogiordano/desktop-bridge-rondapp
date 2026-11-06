@@ -18,6 +18,10 @@ const DEFAULTS = {
   frameTimeoutMs: 3000, // time to wait for a complete data frame
   readyTimeoutMs: 20000, // waitReady: max time polling ENQ
   pollMs: 250,
+  // After a report the printer keeps printing (v8.5, Tabla 59): ~3 s after X, ~20 s after Z ("reporte de
+  // estado de transmisión") before the next command
+  xSettleMs: 3000,
+  zSettleMs: 20000,
 };
 
 class FiscalProtocolError extends Error {

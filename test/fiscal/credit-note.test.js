@@ -23,7 +23,7 @@ test('comandos oficiales: cliente, factura afectada (nº, fecha, serial), coment
   assert.deepEqual(buildCreditNoteCommands(NC, HKA80, TAXES), [
     'iR*V-12345678', 'iS*José Pérez',
     'iF*00000000042', 'iD*04/11/2026', 'iI*Z1F1234567',
-    'ACliente devolvió el pedido',
+    '@Cliente devolvió el pedido',
     'd1000005205000002000Hamburguesa', 'd0000001000000001000Agua',
     '101',
   ]);

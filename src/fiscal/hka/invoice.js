@@ -70,11 +70,23 @@ async function readDocumentTotals(p, taxes) {
 /** First payment line ("1NN" or "2NN" + amount): the totals are read right before it */
 const isPaymentLine = (cmd) => /^[12]\d\d(\d{12})?$/.test(cmd);
 
-/** Annuls an open fiscal document; returns true if the printer accepted it. */
+/**
+ * Annuls an open fiscal document; true only if the printer is no longer in it. The manual (v8.5, Tabla 16)
+ * warns that after a partial payment "7" does NOT annul: the document stays open waiting for the rest.
+ */
 async function annulOpen(p) {
   const r = await p.command('7');
-  if (r === 'busy') await p.waitReady();
-  return r !== 'nak';
+  if (r === 'nak') return false;
+  const st = await p.waitReady();
+  return st.state !== 'fiscal_document_open';
+}
+
+/** Flag 21 = how prices and quantities are read (v8.5, Tabla 72): document.js only speaks 00 (8+2, 5+3). */
+function checkPriceFormat(s3) {
+  const f21 = s3?.flags?.[21];
+  if (f21 && f21 !== '00') {
+    throw new FiscalEmitError('price_format', `La máquina fiscal tiene el flag 21 en ${f21}: RondApp solo factura con el flag 21 en 00 (precios con 2 decimales). Pídele a tu técnico que lo cambie.`, false);
+  }
 }
 
 /**
@@ -118,15 +130,21 @@ async function emitDocument(p, kind, build) {
   let st = await p.waitReady();
   let annulledOpenDocument = false;
   if (st.state === 'fiscal_document_open') {
-    if (!(await annulOpen(p))) throw new FiscalEmitError('stuck_document', 'Hay un documento fiscal abierto que no se pudo anular', false);
+    if (!(await annulOpen(p))) {
+      throw new FiscalEmitError('stuck_document', 'Hay un documento fiscal abierto que la máquina no deja anular (ya tiene pagos): termínalo en la máquina o llama a tu técnico antes de volver a facturar', false);
+    }
     annulledOpenDocument = true;
     st = await p.waitReady();
   }
   if (!st.ready) throw new FiscalEmitError('not_ready', `La impresora fiscal no está lista: ${st.error.message}`, false, { status: st });
+  if (st.mode === 'training') {
+    throw new FiscalEmitError('training_mode', 'La máquina fiscal está en modo entrenamiento (sin fiscalizar): lo que imprime no tiene validez fiscal. Pídele a tu técnico que la fiscalice.', false, { status: st });
+  }
 
   // 2. Counters and rates (rates decide the tax char of each item)
   const before = await counterOf(p, kind);
   const s3 = parseS3(await p.query('S3'));
+  checkPriceFormat(s3);
   // IGTF mode: the printer charges it; its accumulated IGTF (U0X) before and after gives this document's
   const igtfBefore = igtfModeOf(s3) ? await readIgtf(p, kind) : null;
   let cmds;
@@ -209,7 +227,12 @@ async function confirm(p, kind, before, annulledOpenDocument) {
   }
   if (st.state === 'fiscal_document_open') {
     const annulled = await annulOpen(p).catch(() => false);
-    throw new FiscalEmitError('not_closed', `${kind.Noun} no se cerró (¿pagos incompletos?) y se anuló`, annulled ? false : 'unknown', { annulled });
+    throw new FiscalEmitError(
+      'not_closed',
+      annulled ? `${kind.Noun} no se cerró (¿pagos incompletos?) y se anuló` : `${kind.Noun} quedó abierta en la máquina y no se pudo anular: revísala en la máquina`,
+      annulled ? false : 'unknown',
+      { annulled },
+    );
   }
   throw new FiscalEmitError('counter_mismatch', `El contador de la impresora pasó de ${before.last} a ${after.last}: revisa el papel`, 'unknown');
 }

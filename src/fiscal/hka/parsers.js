@@ -24,30 +24,57 @@ function printerDateTime(hhmmss, ddmmyy) {
   return `20${ddmmyy.slice(4, 6)}-${ddmmyy.slice(2, 4)}-${ddmmyy.slice(0, 2)}T${hhmmss.slice(0, 2)}:${hhmmss.slice(2, 4)}:${hhmmss.slice(4, 6)}`;
 }
 
+/**
+ * S1 layouts (manual v8.5, Tabla 45). 'large' = SRP-812, DT-230, HKA-80, P3100DL, PP9, PP9-PLUS, TD1140
+ * (16 fields, with debit notes); 'small' = SRP-350, HSP7000, TD1125, HKA-112, KUBE (14 fields, the credit
+ * notes at the end). In v8.5 the Z counter comes BEFORE the fiscal-memory reports counter; the v8.3 manual
+ * had them the other way round: `withZCounter` settles it with the next Z number of U0X/U0Z.
+ */
 const S1_FIELDS = [
   'cashier', 'dailySales', 'lastInvoice', 'invoicesToday', 'lastDebitNote', 'debitNotesToday',
-  'lastCreditNote', 'creditNotesToday', 'lastNonFiscal', 'nonFiscalToday', 'fiscalMemoryReports',
-  'zReports', 'rif', 'registrationNumber', 'time', 'date',
+  'lastCreditNote', 'creditNotesToday', 'lastNonFiscal', 'nonFiscalToday', 'zReports',
+  'fiscalMemoryReports', 'rif', 'registrationNumber', 'time', 'date',
+];
+const S1_FIELDS_SMALL = [
+  'cashier', 'dailySales', 'lastInvoice', 'invoicesToday', 'lastNonFiscal', 'nonFiscalToday', 'zReports',
+  'fiscalMemoryReports', 'rif', 'registrationNumber', 'time', 'date', 'lastCreditNote', 'creditNotesToday',
 ];
 
-/** S1: counters, RIF and the machine registration number (serial). */
+/** S1: counters, RIF and the machine registration number (serial). The layout is told by the field count. */
 function parseS1(text) {
   const fields = stripTag(splitFields(text), 'S1');
+  const layout = fields.filter(f => f.trim() !== '').length === S1_FIELDS_SMALL.length ? S1_FIELDS_SMALL : S1_FIELDS;
   const raw = {};
-  S1_FIELDS.forEach((k, i) => { raw[k] = (fields[i] ?? '').trim(); });
+  layout.forEach((k, i) => { raw[k] = (fields[i] ?? '').trim(); });
   return {
     cashier: raw.cashier,
     dailySales: num(raw.dailySales) === null ? null : num(raw.dailySales) / 100,
     lastInvoice: num(raw.lastInvoice),
     invoicesToday: num(raw.invoicesToday),
-    lastDebitNote: num(raw.lastDebitNote),
+    lastDebitNote: num(raw.lastDebitNote ?? ''),
     lastCreditNote: num(raw.lastCreditNote),
     zReports: num(raw.zReports),
+    fiscalMemoryReports: num(raw.fiscalMemoryReports),
     rif: raw.rif,
     serial: raw.registrationNumber,
     printerDateTime: printerDateTime(raw.time, raw.date),
+    layout: layout === S1_FIELDS_SMALL ? 'small' : 'large',
     fields,
   };
+}
+
+/** The two 4-digit counters of S1 swapped (firmware with the v8.3 order) */
+const swapZ = (s1) => ({ ...s1, zReports: s1.fiscalMemoryReports, fiscalMemoryReports: s1.zReports, zSwapped: !s1.zSwapped });
+
+/**
+ * Which 4-digit S1 counter is the Z one, from the next Z of U0X/U0Z (`nextZ` − 1 = Z done). Returns s1 as
+ * is when it already matches or nothing can be told; swapped (`zSwapped: true`) when the other one matches.
+ */
+function withZCounter(s1, nextZ) {
+  if (!s1 || !Number.isInteger(nextZ)) return s1;
+  if (s1.zReports === nextZ - 1) return s1;
+  if (s1.fiscalMemoryReports === nextZ - 1) return swapZ(s1);
+  return s1;
 }
 
 /**
@@ -132,10 +159,14 @@ function parseU0X(text, tag = 'U0X') {
   let c = String(text || '');
   if (c.startsWith(tag)) c = c.slice(tag.length);
   c = c.replace(/[\n\r ]/g, '');
-  const AMOUNT = 18, START = 56;
+  // Amount width: 18 (16 + 2) with the extended frames of flag 63, 13 (11 + 2) with the reduced ones. The
+  // manual gives the layout only for the extended one: the width is told by the length (validar en la HKA-80).
+  const START = 56;
+  const rest = Math.max(0, c.length - START);
+  const AMOUNT = rest % 18 === 0 && rest >= 18 * 21 ? 18 : rest % 13 === 0 && rest >= 13 * 21 ? 13 : 18;
   const amount = (k) => {
     const raw = c.slice(START + AMOUNT * k, START + AMOUNT * (k + 1));
-    return /^\d{18}$/.test(raw) ? Number(raw) / 100 : null;
+    return raw.length === AMOUNT && /^\d+$/.test(raw) ? Number(raw) / 100 : null;
   };
   const pair = (b, v) => {
     const base = amount(b), value = amount(v);
@@ -159,6 +190,7 @@ function parseU0X(text, tag = 'U0X') {
     sales: block(0),
     debitNotes: block(7),
     creditNotes: block(14),
+    amountWidth: AMOUNT,
     igtf: c.length >= START + AMOUNT * 30
       ? { invoices: pair(21, 25), creditNotes: pair(26, 27), debitNotes: pair(28, 29) }
       : null,
@@ -166,4 +198,4 @@ function parseU0X(text, tag = 'U0X') {
   };
 }
 
-module.exports = { parseS1, parseS2, parseS3, parseSV, parseU0X, igtfModeOf, printerDateTime, S1_FIELDS };
+module.exports = { parseS1, parseS2, parseS3, parseSV, parseU0X, igtfModeOf, withZCounter, swapZ, printerDateTime, S1_FIELDS, S1_FIELDS_SMALL };

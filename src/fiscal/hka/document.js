@@ -1,7 +1,8 @@
 /**
  * Fiscal document → HKA command lines (manual v8.3 §9.2 of the plan). Pure functions: no I/O.
  *
- * Invoice order: client (iR* RIF, iS* name) → extra lines (iNN) → items → payments.
+ * Invoice order: client (iR* RIF, iS* name) → extra lines (i01…) → items → payments.
+ * Prices and quantities assume flag 21 = 00 (8+2 and 5+3): invoice.js refuses any other value.
  * Item:    <tax char><price 10 = 8+2><quantity 8 = 5+3><description>      e.g. "!000000150000001000Harina"
  * Payment: "2NN" + amount 12 (10+2) for partial payments, "1NN" pays the rest and closes the document.
  * Amounts are in bolívares (the printer works in Bs): the POS converts with the BCV rate of the payment.
@@ -117,7 +118,7 @@ function buildCreditNoteCommands(doc, model, s3Taxes, variant = 'official', opts
   return [
     ...client,
     ...reference,
-    ...(comment ? ['A' + comment] : []),
+    ...(comment ? ['@' + comment] : []), // comentario en el cuerpo (manual v8.5, Tablas 29 y 37)
     ...itemLines(doc, model, s3Taxes, CREDIT_TAX_CHARS),
     ...paymentLines(doc, model, s3Taxes, opts),
   ];
@@ -148,7 +149,7 @@ function extraLines(doc, model) {
   const cmds = [];
   (doc.extraLines || []).slice(0, model.extraLines).forEach((line, i) => {
     const text = cleanText(line, model.extraWidth);
-    if (text) cmds.push('i' + String(i).padStart(2, '0') + text);
+    if (text) cmds.push('i' + String(i + 1).padStart(2, '0') + text); // i01, i02… (manual v8.5, Tabla 29)
   });
   return cmds;
 }

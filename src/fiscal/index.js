@@ -5,7 +5,7 @@
  */
 const { HkaProtocol, FiscalProtocolError } = require('./hka/protocol');
 const { emitInvoice, emitCreditNote, FiscalEmitError } = require('./hka/invoice');
-const { parseSV, parseS1, parseU0X, igtfModeOf } = require('./hka/parsers');
+const { parseSV, parseS1, parseU0X, igtfModeOf, withZCounter, swapZ } = require('./hka/parsers');
 const { findModel } = require('./hka/models');
 const { PowerShellSerialTransport } = require('./serial-powershell');
 const ports = require('./ports');
@@ -71,21 +71,24 @@ function toStatusResult(port, info) {
     taxes: info.s3.taxes,
     // IGTF (v8.5): flag 50 = 01 → la máquina lo cobra en los medios 20–24 (null = la máquina no lo informa)
     igtf: { mode: igtfModeOf(info.s3), rate: info.s3.igtf?.rate ?? null },
-    flags: { 50: info.s3.flags?.[50] ?? null, 63: info.s3.flags?.[63] ?? null },
+    flags: { 21: info.s3.flags?.[21] ?? null, 50: info.s3.flags?.[50] ?? null, 63: info.s3.flags?.[63] ?? null },
     status: info.status,
     // Raw answers: the layouts are not confirmed for every model (spike with the real printer)
     raw: { sv: info.sv.fields, s1: info.s1.fields, s3: info.s3.fields, s3Flags: info.s3.flags, s5: info.s5Raw },
   };
 }
 
+/** The simulated printers print instantly: no wait after the reports */
+const NO_SETTLE = { xSettleMs: 0, zSettleMs: 0 };
+
 /** Opens the port (or the injected transport), runs `fn(protocol)` and always closes it. */
-function onPort({ port, workDir, openTransport }, fn) {
+function onPort({ port, workDir, openTransport, protocolOpts }, fn) {
   return withPort(port, async () => {
     const t = openTransport ? await openTransport(port)
       : isSimPort(port) ? simulatorFor(String(port).toUpperCase())
       : await PowerShellSerialTransport.open(port, workDir);
     try {
-      return await fn(new HkaProtocol(t));
+      return await fn(new HkaProtocol(t, { ...(isSimPort(port) ? NO_SETTLE : {}), ...protocolOpts }));
     } finally {
       await t.close();
     }
@@ -98,7 +101,13 @@ function onPort({ port, workDir, openTransport }, fn) {
  *        `openTransport` replaces the real COM port (tests use the simulator).
  */
 function readFiscalStatus({ port, workDir, openTransport }) {
-  return onPort({ port, workDir, openTransport }, async (p) => toStatusResult(port, await p.readInfo()));
+  return onPort({ port, workDir, openTransport }, async (p) => {
+    const info = await p.readInfo();
+    // Which S1 counter is the Z one (the manuals disagree): the next Z of U0X tells
+    let nextZ = null;
+    try { nextZ = parseU0X(await p.query('U0X')).nextZ; } catch { nextZ = null; }
+    return toStatusResult(port, { ...info, s1: withZCounter(info.s1, nextZ) });
+  });
 }
 
 
@@ -135,28 +144,37 @@ async function modelOf(p) {
 }
 
 /**
- * Reporte X (lectura) o Z (cierre del día). Z with an open document is refused by the printer.
+ * Reporte X (lectura) o Z (cierre del día), or D (prints the printer's programming, nothing fiscal).
+ * Z with an open document is refused by the printer.
  * Before printing, the report's data is read without printing (U0X / U0Z: counters, bases, tax and IGTF of
  * the day) and returned as `data`, so the POS can keep the Z. For a Z the counter of S1 confirms it: it went
  * up by one → `number` is that Z. `data` is null if the printer did not answer U0X/U0Z (the report still prints).
  */
-function runFiscalReport({ port, kind, workDir, openTransport }) {
-  if (kind !== 'X' && kind !== 'Z') return Promise.reject(new Error('Reporte inválido: use X o Z'));
-  return onPort({ port, workDir, openTransport }, async (p) => {
+function runFiscalReport({ port, kind, workDir, openTransport, protocolOpts }) {
+  if (kind !== 'X' && kind !== 'Z' && kind !== 'D') return Promise.reject(new Error('Reporte inválido: use X, Z o D'));
+  return onPort({ port, workDir, openTransport, protocolOpts }, async (p) => {
     const before = await p.waitReady();
     if (before.state === 'fiscal_document_open') throw new FiscalProtocolError('document_open', 'Hay un documento fiscal abierto: ciérralo o anúlalo antes del reporte');
     if (!before.ready) throw new FiscalProtocolError('not_ready', `La impresora fiscal no está lista: ${before.error.message}`);
-    const s1Before = parseS1(await p.query('S1'));
+    if (kind === 'D') {
+      // "D" imprime la programación (tasas, cajero, nombres de los medios de pago, flags, firmware): no es fiscal.
+      // Ningún status devuelve los nombres de los medios de pago, así que es la forma de verlos sin el técnico.
+      if (await p.command('D') === 'nak') throw new FiscalProtocolError('rejected', 'La impresora rechazó imprimir la programación');
+      return { kind, status: await p.waitReady(30000) };
+    }
     let data = null;
     try {
       data = parseU0X(await p.query(kind === 'X' ? 'U0X' : 'U0Z'), kind === 'X' ? 'U0X' : 'U0Z');
     } catch {
       data = null;
     }
+    const s1Before = withZCounter(parseS1(await p.query('S1')), data?.nextZ);
     const r = await p.command(kind === 'X' ? 'I0X' : 'I0Z');
     if (r === 'nak') throw new FiscalProtocolError('rejected', `La impresora rechazó el reporte ${kind}`);
+    await new Promise((res) => setTimeout(res, kind === 'Z' ? p.opts.zSettleMs : p.opts.xSettleMs));
     const after = await p.waitReady(60000); // a Z report takes a while to print
-    const s1After = parseS1(await p.query('S1'));
+    const s1Read = parseS1(await p.query('S1'));
+    const s1After = s1Before.zSwapped ? swapZ(s1Read) : s1Read;
     const result = { kind, status: after, serial: s1After.serial || s1Before.serial, printerDateTime: s1After.printerDateTime, data };
     if (kind === 'X') return result;
     const prev = s1Before.zReports;

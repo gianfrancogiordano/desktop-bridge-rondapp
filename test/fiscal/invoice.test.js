@@ -7,6 +7,7 @@ const { emitFiscalInvoice, runFiscalReport } = require('../../src/fiscal');
 const { findModel } = require('../../src/fiscal/hka/models');
 
 const FAST = { ackTimeoutMs: 40, frameTimeoutMs: 60, readyTimeoutMs: 400, pollMs: 5 };
+const NO_WAIT = { xSettleMs: 0, zSettleMs: 0 };
 const HKA80 = findModel('HKA80');
 const DOC = {
   client: { rif: 'V-12345678', name: 'José Pérez' },
@@ -87,11 +88,13 @@ test('emitFiscalInvoice por puerto: detecta el modelo y devuelve número y seria
 
 test('reportes X y Z', async () => {
   const sim = new HkaSimulator();
-  assert.equal((await runFiscalReport({ port: 'COM8', kind: 'Z', openTransport: async () => sim })).kind, 'Z');
+  assert.equal((await runFiscalReport({ port: 'COM8', kind: 'Z', protocolOpts: NO_WAIT, openTransport: async () => sim })).kind, 'Z');
   assert.ok(sim.received.includes('I0Z'));
-  await assert.rejects(runFiscalReport({ port: 'COM8', kind: 'Y', openTransport: async () => sim }), /Reporte inválido/);
+  await assert.rejects(runFiscalReport({ port: 'COM8', kind: 'Y', protocolOpts: NO_WAIT, openTransport: async () => sim }), /Reporte inválido/);
+  assert.equal((await runFiscalReport({ port: 'COM8', kind: 'D', protocolOpts: NO_WAIT, openTransport: async () => sim })).kind, 'D');
+  assert.equal(sim.programmingPrinted, 1);
   const paper = new HkaSimulator({ paperOut: true });
-  await assert.rejects(runFiscalReport({ port: 'COM9', kind: 'X', openTransport: async () => paper }), /no está lista/);
+  await assert.rejects(runFiscalReport({ port: 'COM9', kind: 'X', protocolOpts: NO_WAIT, openTransport: async () => paper }), /no está lista/);
 });
 
 test('la máquina totaliza menos que nosotros: un parcial cierra la factura y el pago final da NAK → emitida', async () => {
@@ -173,7 +176,7 @@ test('cierre Z: lee sus datos (U0Z) antes de imprimir, devuelve su número y dej
   const sim = new HkaSimulator({ lastInvoice: 41, zReports: 12, igtfMode: true });
   await run(sim, { items: [{ description: 'Pizza', quantity: 1, unitPrice: 116, taxRate: 16 }], payments: [{ code: '20', amount: 119.48 }] });
   await run(sim, { items: [{ description: 'Agua', quantity: 1, unitPrice: 10, taxRate: null }], payments: [{ code: '01', amount: 10 }] });
-  const z = await runFiscalReport({ port: 'COM8', kind: 'Z', openTransport: async () => sim });
+  const z = await runFiscalReport({ port: 'COM8', kind: 'Z', protocolOpts: NO_WAIT, openTransport: async () => sim });
   assert.equal(z.kind, 'Z');
   assert.equal(z.number, 13);
   assert.equal(z.previous, 12);
@@ -184,7 +187,7 @@ test('cierre Z: lee sus datos (U0Z) antes de imprimir, devuelve su número y dej
   assert.deepEqual(z.data.sales.rates[0], { slot: 1, base: 100, tax: 16 });
   assert.deepEqual(z.data.igtf.invoices, { base: 116, igtf: 3.48 });
   // Después del Z el día arranca en cero
-  const x = await runFiscalReport({ port: 'COM8', kind: 'X', openTransport: async () => sim });
+  const x = await runFiscalReport({ port: 'COM8', kind: 'X', protocolOpts: NO_WAIT, openTransport: async () => sim });
   assert.equal(x.data.sales.exempt, 0);
   assert.equal(x.data.igtf.invoices.igtf, 0);
 });
@@ -192,5 +195,39 @@ test('cierre Z: lee sus datos (U0Z) antes de imprimir, devuelve su número y dej
 test('cierre Z con un documento abierto: no se hace', async () => {
   const sim = new HkaSimulator();
   await new HkaProtocol(sim, FAST).command('!000000100000001000Abierto');
-  await assert.rejects(runFiscalReport({ port: 'COM8', kind: 'Z', openTransport: async () => sim }), (e) => e.code === 'document_open');
+  await assert.rejects(runFiscalReport({ port: 'COM8', kind: 'Z', protocolOpts: NO_WAIT, openTransport: async () => sim }), (e) => e.code === 'document_open');
+});
+
+test('imprimir la programación (D) con un documento abierto: se rechaza sin tocar el documento', async () => {
+  const sim = new HkaSimulator({ lastInvoice: 10 });
+  await new HkaProtocol(sim, FAST).command('!000000100000001000Abierto');
+  await assert.rejects(runFiscalReport({ port: 'COM8', kind: 'D', protocolOpts: NO_WAIT, openTransport: async () => sim }), /documento fiscal abierto/);
+  assert.equal(sim.programmingPrinted, undefined);
+});
+
+test('flag 21 distinto de 00: no se manda nada a la máquina', async () => {
+  const sim = new HkaSimulator({ lastInvoice: 41, igtfMode: false, flag21: '01' });
+  await assert.rejects(run(sim), (e) => e.code === 'price_format' && e.emitted === false);
+  assert.equal(sim.printed.length, 0);
+  assert.ok(!sim.received.some((c) => /^[ !"#]\d{10}/.test(c)));
+});
+
+test('máquina en modo entrenamiento: no factura', async () => {
+  const sim = new HkaSimulator({ lastInvoice: 41, training: true });
+  await assert.rejects(run(sim), (e) => e.code === 'training_mode' && e.emitted === false);
+  assert.equal(sim.printed.length, 0);
+});
+
+test('después de un pago parcial "7" no anula: el resultado queda "unknown", nunca "no se emitió"', async () => {
+  // El pago final se rechaza: la factura queda abierta con un pago parcial y la máquina no deja anularla
+  const sim = new HkaSimulator({ lastInvoice: 41, nakMatch: /^120$/ });
+  await assert.rejects(run(sim), (e) => e.emitted === 'unknown' && e.annulled === false);
+  assert.equal(sim.sts1, 0x61);
+});
+
+test('reporte Z con el orden de contadores del manual v8.3: se detecta con el próximo Z', async () => {
+  const sim = new HkaSimulator({ lastInvoice: 41, zReports: 12, s1Order: 'v83' });
+  const z = await runFiscalReport({ port: 'COM8', kind: 'Z', protocolOpts: NO_WAIT, openTransport: async () => sim });
+  assert.equal(z.number, 13);
+  assert.equal(z.previous, 12);
 });

@@ -43,7 +43,7 @@ test('factura completa: cliente, ítems (exento y gravado) y pago mixto (las div
   assert.deepEqual(cmds, [
     'iR*V-12345678',
     'iS*José Pérez',
-    'i00Orden R-014 · Mesa 5',
+    'i01Orden R-014 · Mesa 5',
     '!000005205000002000Hamburguesa',
     ' 000001000000001000Agua',
     '201000000044100',

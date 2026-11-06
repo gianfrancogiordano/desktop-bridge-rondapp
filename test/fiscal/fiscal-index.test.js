@@ -23,7 +23,7 @@ test('readFiscalStatus con el simulador: datos para configurar la impresora en e
 test('readFiscalStatus informa el modo IGTF de la máquina (flag 50), su tasa y el flag 63', async () => {
   const on = await readFiscalStatus({ port: 'COM3', openTransport: async () => new HkaSimulator({ igtfMode: true }) });
   assert.deepEqual(on.igtf, { mode: true, rate: 3 });
-  assert.deepEqual(on.flags, { 50: '01', 63: '17' });
+  assert.deepEqual(on.flags, { 21: '00', 50: '01', 63: '17' });
   const off = await readFiscalStatus({ port: 'COM3', openTransport: async () => new HkaSimulator({ igtfMode: false }) });
   assert.equal(off.igtf.mode, false);
   // Firmware que no informa los flags (formato v8.3): no se sabe
@@ -73,4 +73,10 @@ test('modo simulador: el puerto SIM1 numera seguido entre operaciones', async ()
     })();
   `], { env: { ...process.env, RONDAPP_FISCAL_SIMULATOR: '1' }, cwd: require('node:path').join(__dirname, '../..') }).toString().trim();
   assert.deepEqual(JSON.parse(out), [1, 2, 2, 'SIM1']);
+});
+
+test('readFiscalStatus: el último Z sale bien aunque el firmware tenga el orden de S1 del manual v8.3', async () => {
+  const r = await readFiscalStatus({ port: 'COM3', openTransport: async () => new HkaSimulator({ zReports: 12, s1Order: 'v83' }) });
+  assert.equal(r.zReports, 12);
+  assert.equal(r.model, 'HKA-80');
 });

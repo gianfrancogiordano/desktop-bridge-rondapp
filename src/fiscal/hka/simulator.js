@@ -9,7 +9,9 @@ const lfJoin = (fields) => fields.join(String.fromCharCode(LF));
 
 class HkaSimulator {
   constructor(opts = {}) {
-    this.model = opts.model || 'HKA80';
+    this.model = opts.model || 'Z7C'; // SV answers the model code (manual v8.5, Tabla 58: Z7C = HKA-80)
+    this.s1Order = opts.s1Order || 'v85'; // 'v83': firmware with the Z and fiscal-memory counters swapped
+    this.flag21 = opts.flag21 || '00'; // price/quantity format (only 00 is supported)
     this.serial = opts.serial || 'Z1F1234567';
     this.rif = opts.rif || 'J123456789';
     this.lastInvoice = opts.lastInvoice ?? 41;
@@ -18,7 +20,7 @@ class HkaSimulator {
     this.creditNoteVariant = opts.creditNoteVariant || 'official';
     this.zReports = opts.zReports ?? 12;
     this.taxes = opts.taxes || ['21600', '20800', '23100']; // type + rate (validar significado del tipo)
-    this.sts1 = 0x60; // fiscal, idle
+    this.sts1 = opts.training ? 0x40 : 0x60; // fiscal (or training), idle
     this.sts2 = opts.paperOut ? 0x41 : 0x40;
     this.busyFor = 0; // next N commands get no answer at all (printer busy)
     this.nakCommands = new Set(opts.nak || []);
@@ -55,13 +57,14 @@ class HkaSimulator {
       case 'SV': return lfJoin(['SV' + this.model, 'VE']);
       case 'S1': return lfJoin([
         'S1' + '01', '00000000000150000', String(this.lastInvoice).padStart(8, '0'), '00003',
-        '00000000', '00000', String(this.lastCreditNote).padStart(8, '0'), '00000', '00000010', '00000', '0000', String(this.zReports).padStart(4, '0'),
+        '00000000', '00000', String(this.lastCreditNote).padStart(8, '0'), '00000', '00000010', '00000',
+        ...(this.s1Order === 'v83' ? ['0000', String(this.zReports).padStart(4, '0')] : [String(this.zReports).padStart(4, '0'), '0000']),
         this.rif, this.serial, '153000', '041126',
       ]);
       case 'S3': return this.igtfMode === undefined
         ? lfJoin(['S3' + this.taxes[0], this.taxes[1], this.taxes[2], '00000000000000000000'])
         : 'S3' + this.taxes.join('') + '2' + String(Math.round(this.igtfRate * 100)).padStart(4, '0')
-          + Array.from({ length: 64 }, (_, n) => (n === 50 ? (this.igtfMode ? '01' : '00') : n === 63 ? (this.igtfMode ? '17' : '00') : '00')).join('');
+          + Array.from({ length: 64 }, (_, n) => (n === 21 ? this.flag21 : n === 50 ? (this.igtfMode ? '01' : '00') : n === 63 ? (this.igtfMode ? '17' : '00') : '00')).join('');
       case 'U0X': return this._u0x();
       case 'U0Z': return this._u0x().replace(/^U0X/, 'U0Z');
       case 'S5': return lfJoin(['S5' + this.rif, this.serial, '0005']);
@@ -188,7 +191,7 @@ class HkaSimulator {
       this.sts1 = 0x61;
       this._total = (this._total || 0) + (Number(item[2]) / 100) * (Number(item[3]) / 1000) * this.totalFactor;
       this._doc.push(cmd);
-    } else if (/^i(R\*|S\*|\d\d)/.test(cmd) || reference || (/^A/.test(cmd) && this.sts1 !== 0x61)) {
+    } else if (/^i(R\*|S\*|\d\d)/.test(cmd) || reference || /^@/.test(cmd)) {
       this._doc.push(cmd);
     } else if (cmd === 'I0Z' && this.sts1 !== 0x61) {
       // Cierre Z: un Z más y los acumulados del día vuelven a cero
@@ -196,6 +199,11 @@ class HkaSimulator {
       this.acc = { invoice: { base: 0, igtf: 0 }, credit_note: { base: 0, igtf: 0 } };
       this.day = this._emptyDay();
       this.zPrinted = (this.zPrinted || 0) + 1;
+    } else if (cmd === 'D' && this.sts1 !== 0x61) {
+      this.programmingPrinted = (this.programmingPrinted || 0) + 1;
+    } else if (cmd === 'D' && this.sts1 === 0x61) {
+      this._out.push(Buffer.from([NAK])); // con un documento abierto no imprime la programación
+      return;
     } else if (cmd === 'I0Z' && this.sts1 === 0x61) {
       this._out.push(Buffer.from([NAK])); // con un documento abierto no hay Z
       return;
@@ -214,6 +222,8 @@ class HkaSimulator {
     } else if (/^1\d\d$/.test(cmd) && this.sts1 === 0x61) {
       this._doc.push(cmd);
       this._pay(cmd.slice(1, 3), null);
+    } else if (cmd === '7' && this.sts1 === 0x61 && this._paid > 0) {
+      // v8.5, Tabla 16: with partial payments "7" does not annul, the document stays open (ACK anyway)
     } else if (cmd === '7' && this.sts1 === 0x61) {
       this._doc.push('ANULADA');
       this._closeDocument();
