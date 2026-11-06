@@ -1,7 +1,7 @@
 {
   "name": "rondapp-print-bridge",
   "productName": "RondApp PrintBridge",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Puente local de impresion para RondApp (ícono en la bandeja del sistema)",
   "main": "src/main.js",
   "author": "RondApp",

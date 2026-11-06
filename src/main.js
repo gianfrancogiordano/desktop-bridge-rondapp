@@ -87,6 +87,18 @@ async function testPrint(name) {
   refreshMenu();
 }
 
+/**
+ * Flags that RondApp needs (manual v8.5, Tabla 72): 21 = price format (only 00 works), 50 = IGTF mode,
+ * 63 = response frames. Shown so the technician can check them on the spot.
+ */
+function fiscalFlagsLine(r) {
+  const f = r.flags || {};
+  const v = (x) => x ?? '?';
+  const f21 = f[21] == null ? '?' : f[21] === '00' ? '00 (ok)' : `${f[21]} (RondApp necesita 00)`;
+  const igtf = r.igtf?.mode === true ? `sí${r.igtf.rate ? ` (${r.igtf.rate}%)` : ''}` : r.igtf?.mode === false ? 'no' : '?';
+  return `Flag 21: ${f21}   Flag 50: ${v(f[50])} (IGTF: ${igtf})   Flag 63: ${v(f[63])}`;
+}
+
 /** "Probar impresora fiscal": read-only status of the printer on `port` (nothing fiscal is emitted). */
 async function testFiscal(port) {
   const dir = logger.getDir() || app.getPath('userData');
@@ -106,6 +118,7 @@ async function testFiscal(port) {
         `Última factura: ${r.lastInvoice ?? '?'}   Último Z: ${r.zReports ?? '?'}`,
         `Estado: ${r.status ? `${r.status.mode} / ${r.status.state}` : '?'}`,
         taxes,
+        fiscalFlagsLine(r),
         '',
         `Se guardó el detalle en la carpeta de logs (${path.basename(file)}): envíalo a soporte de RondApp.`,
       ].join('\n'),
