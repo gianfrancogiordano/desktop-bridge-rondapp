@@ -12,6 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const logger = require('./logger');
+const { POWERSHELL } = require('./powershell');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -104,7 +105,7 @@ function ensureWinScript(dir) {
 async function getPrintersWin() {
   const cmd = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ' +
     'Get-CimInstance Win32_Printer | Select-Object Name,Default,WorkOffline,PrinterStatus | ConvertTo-Json -Compress';
-  const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd]);
+  const { stdout } = await run(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd]);
   const text = stdout.trim();
   if (!text) return [];
   let data = JSON.parse(text);
@@ -121,7 +122,7 @@ async function printRawWin(printerName, buffer, workDir) {
   const tmp = path.join(os.tmpdir(), `rondapp-job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.bin`);
   fs.writeFileSync(tmp, buffer);
   try {
-    await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Printer', printerName, '-File', tmp]);
+    await run(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Printer', printerName, '-File', tmp]);
     return `win-${Date.now()}`;
   } finally {
     fs.unlink(tmp, () => {});

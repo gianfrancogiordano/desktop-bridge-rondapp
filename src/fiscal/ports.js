@@ -3,6 +3,7 @@
  * as a USB CDC virtual COM port VID_04D8&PID_000A (dato de terceros; validar con la máquina real).
  */
 const { execFile } = require('child_process');
+const { POWERSHELL } = require('../powershell');
 
 const HKA_USB_IDS = [{ vid: '04D8', pid: '000A' }];
 
@@ -36,7 +37,7 @@ function listSerialPorts() {
   const cmd = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ' +
     "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match '\\(COM\\d+\\)' } | Select-Object Name,PNPDeviceID | ConvertTo-Json -Compress";
   return new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd], { windowsHide: true, timeout: 20000 },
+    execFile(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd], { windowsHide: true, timeout: 20000 },
       (err, stdout) => {
         if (err) return reject(err);
         const text = String(stdout).trim();

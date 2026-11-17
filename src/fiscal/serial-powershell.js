@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const logger = require('../logger');
+const { POWERSHELL } = require('../powershell');
 
 const SCRIPT = `
 param([Parameter(Mandatory=$true)][string]$Port, [int]$Baud = 9600)
@@ -77,7 +78,7 @@ class PowerShellSerialTransport {
   }
 
   _start(script, port, baud, openTimeoutMs) {
-    this.proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Port', port, '-Baud', String(baud)], { windowsHide: true });
+    this.proc = spawn(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Port', port, '-Baud', String(baud)], { windowsHide: true });
     this.lines = readline.createInterface({ input: this.proc.stdout });
     this.waiting = []; // resolvers of pending requests, FIFO (one line answers one request)
     this.lines.on('line', (line) => {
