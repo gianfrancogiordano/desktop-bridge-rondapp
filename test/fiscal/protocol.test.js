@@ -62,3 +62,14 @@ test('máquina desconectada: timeout claro, nunca se cuelga', async () => {
   await assert.rejects(new HkaProtocol(sim, FAST).enq(), (e) => e.code === 'timeout');
   await assert.rejects(new HkaProtocol(sim, FAST).waitReady(), (e) => e.code === 'busy');
 });
+
+test('NAK: el log trae el estado (STS1/STS2) y solo el inicio del comando', async (t) => {
+  const logger = require('../../src/logger');
+  const warn = t.mock.method(logger, 'warn', () => {});
+  const sim = new HkaSimulator({ nakMatch: /^iR\*/ });
+  assert.equal(await new HkaProtocol(sim, FAST).command('iR*V123456789'), 'nak');
+  assert.equal(warn.mock.callCount(), 1);
+  const line = warn.mock.calls[0].arguments[0];
+  assert.match(line, /NAK a «iR\*»: STS1=0x60 \(fiscal\/idle\) STS2=0x40 \(Sin error\)/);
+  assert.doesNotMatch(line, /123456789/);
+});

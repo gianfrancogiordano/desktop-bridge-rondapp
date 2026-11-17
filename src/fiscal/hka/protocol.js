@@ -12,6 +12,7 @@ const { STX, ETX, EOT, ENQ, ACK, NAK, ETB, buildFrame, parseFrame, decodeText } 
 const { decodeStatus } = require('./status');
 const { parseS1, parseS3, parseSV } = require('./parsers');
 const { findModel } = require('./models');
+const logger = require('../../logger');
 
 const DEFAULTS = {
   ackTimeoutMs: 1500, // time to wait for ACK/NAK after a command before calling it "busy"
@@ -93,9 +94,27 @@ class HkaProtocol {
       const chunk = await this.t.read(Math.max(1, deadline - Date.now()));
       if (!chunk || !chunk.length) continue;
       if (chunk.includes(ACK)) return 'ack';
-      if (chunk.includes(NAK)) return 'nak';
+      if (chunk.includes(NAK)) {
+        await this._logNak(text);
+        return 'nak';
+      }
     }
     return 'busy';
+  }
+
+  /**
+   * After a NAK the printer's STS2 says why (invalid command, invalid value, no paper…): log it. Only the
+   * first 3 characters of the command go to the log (enough to identify it; no customer names or RIFs).
+   */
+  async _logNak(text) {
+    const cmd = String(text).slice(0, 3);
+    try {
+      const st = await this.enq();
+      const hex = (n) => '0x' + n.toString(16).padStart(2, '0');
+      logger.warn(`[fiscal] NAK a «${cmd}»: STS1=${hex(st.sts1)} (${st.mode}/${st.state}) STS2=${hex(st.sts2)} (${st.error.message})`);
+    } catch (e) {
+      logger.warn(`[fiscal] NAK a «${cmd}»; no se pudo leer el estado: ${e.message}`);
+    }
   }
 
   /** Sends a status/report query and returns the text of its answer (all blocks joined). */
