@@ -85,6 +85,11 @@ class PowerShellSerialTransport {
       const w = this.waiting.shift();
       if (w) w(line.trim());
     });
+    this.proc.on('error', (err) => { // could not launch PowerShell (ENOENT, blocked…)
+      this.closed = true;
+      this.launchError = err;
+      for (const w of this.waiting.splice(0)) w(null);
+    });
     this.proc.stderr.on('data', (d) => logger.warn('[fiscal] powershell:', d.toString().trim()));
     this.proc.on('exit', (code) => {
       this.closed = true;
@@ -94,7 +99,8 @@ class PowerShellSerialTransport {
       const timer = setTimeout(() => reject(new Error(`No se pudo abrir ${port} a tiempo`)), openTimeoutMs);
       this.waiting.push((line) => {
         clearTimeout(timer);
-        if (line === 'READY') resolve();
+        if (line === null) reject(this.launchError);
+        else if (line === 'READY') resolve();
         else { this.close(); reject(new Error(line.replace(/^ERR\s*/, '') || `No se pudo abrir ${port}`)); }
       });
     });
@@ -103,7 +109,7 @@ class PowerShellSerialTransport {
   _request(line) {
     if (this.closed) return Promise.reject(new Error('El puerto está cerrado'));
     return new Promise((resolve) => {
-      this.waiting.push(resolve);
+      this.waiting.push((line) => resolve(line === null ? 'ERR No se pudo ejecutar PowerShell' : line));
       this.proc.stdin.write(line + '\n');
     });
   }

@@ -3,7 +3,7 @@
  * as a USB CDC virtual COM port VID_04D8&PID_000A (dato de terceros; validar con la máquina real).
  */
 const { execFile } = require('child_process');
-const { POWERSHELL } = require('../powershell');
+const { POWERSHELL, powerShellAvailable, fallBackIfUnlaunchable } = require('../powershell');
 
 const HKA_USB_IDS = [{ vid: '04D8', pid: '000A' }];
 
@@ -32,8 +32,19 @@ function toPorts(rows) {
     .sort((a, b) => Number(b.likelyHka) - Number(a.likelyHka) || a.port.localeCompare(b.port, undefined, { numeric: true }));
 }
 
-function listSerialPorts() {
-  if (process.platform !== 'win32') return Promise.resolve([]);
+async function listSerialPorts() {
+  if (process.platform !== 'win32') return [];
+  // Lazy: ../winapi needs koffi, which the tests of this module do not need
+  if (!powerShellAvailable()) return toPorts(require('../winapi').listPortRows());
+  try {
+    return await listSerialPortsPowerShell();
+  } catch (err) {
+    if (fallBackIfUnlaunchable(err)) return toPorts(require('../winapi').listPortRows());
+    throw err;
+  }
+}
+
+function listSerialPortsPowerShell() {
   const cmd = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ' +
     "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match '\\(COM\\d+\\)' } | Select-Object Name,PNPDeviceID | ConvertTo-Json -Compress";
   return new Promise((resolve, reject) => {

@@ -6,6 +6,7 @@ const { getPrinters, printDirect } = require('./printer');
 const { startServer, PORT } = require('./server');
 const { cleanupLegacyBridge } = require('./legacy');
 const fiscal = require('./fiscal');
+const { describeBackend } = require('./powershell');
 
 const PRINTER_REFRESH_MS = 30000;
 const SERVER_RETRY_MS = 10000;
@@ -253,6 +254,7 @@ app.on('window-all-closed', () => {});
 app.whenReady().then(async () => {
   logger.init(app.getPath('logs'));
   logger.info(`Starting PrintBridge v${app.getVersion()} (${process.platform}/${process.arch}, packaged=${app.isPackaged})`);
+  logger.info(`Impresoras y fiscal vía ${describeBackend()}`);
 
   if (process.platform === 'darwin' && app.dock) app.dock.hide();
 

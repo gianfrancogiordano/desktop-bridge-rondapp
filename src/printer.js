@@ -1,7 +1,8 @@
 /**
  * OS printer access WITHOUT native addons.
  *
- *  - Windows: PowerShell (Get-CimInstance for listing, winspool.drv P/Invoke for RAW printing)
+ *  - Windows: PowerShell (Get-CimInstance for listing, winspool.drv P/Invoke for RAW printing), or the
+ *    Windows API through koffi when PowerShell is missing or blocked (./winapi.js, see ./powershell.js)
  *  - macOS / Linux: CUPS command line tools (lpstat / lp -o raw)
  *
  * Avoiding node-gyp/native modules removes the most fragile part of the previous
@@ -12,7 +13,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const logger = require('./logger');
-const { POWERSHELL } = require('./powershell');
+const { POWERSHELL, powerShellAvailable, fallBackIfUnlaunchable } = require('./powershell');
+const winapi = require('./winapi');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -103,6 +105,16 @@ function ensureWinScript(dir) {
 }
 
 async function getPrintersWin() {
+  if (!powerShellAvailable()) return winapi.listPrinters();
+  try {
+    return await getPrintersPowerShell();
+  } catch (err) {
+    if (fallBackIfUnlaunchable(err)) return winapi.listPrinters();
+    throw err;
+  }
+}
+
+async function getPrintersPowerShell() {
   const cmd = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ' +
     'Get-CimInstance Win32_Printer | Select-Object Name,Default,WorkOffline,PrinterStatus | ConvertTo-Json -Compress';
   const { stdout } = await run(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd]);
@@ -118,6 +130,16 @@ async function getPrintersWin() {
 }
 
 async function printRawWin(printerName, buffer, workDir) {
+  if (!powerShellAvailable()) return winapi.printRaw(printerName, buffer);
+  try {
+    return await printRawPowerShell(printerName, buffer, workDir);
+  } catch (err) {
+    if (fallBackIfUnlaunchable(err)) return winapi.printRaw(printerName, buffer);
+    throw err;
+  }
+}
+
+async function printRawPowerShell(printerName, buffer, workDir) {
   const script = ensureWinScript(workDir);
   const tmp = path.join(os.tmpdir(), `rondapp-job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.bin`);
   fs.writeFileSync(tmp, buffer);

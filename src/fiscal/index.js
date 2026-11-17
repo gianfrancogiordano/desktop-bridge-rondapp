@@ -8,6 +8,7 @@ const { emitInvoice, emitCreditNote, FiscalEmitError } = require('./hka/invoice'
 const { parseSV, parseS1, parseU0X, igtfModeOf, withZCounter, swapZ } = require('./hka/parsers');
 const { findModel } = require('./hka/models');
 const { PowerShellSerialTransport } = require('./serial-powershell');
+const { powerShellAvailable, fallBackIfUnlaunchable } = require('../powershell');
 const ports = require('./ports');
 const { HkaSimulator } = require('./hka/simulator');
 
@@ -81,12 +82,24 @@ function toStatusResult(port, info) {
 /** The simulated printers print instantly: no wait after the reports */
 const NO_SETTLE = { xSettleMs: 0, zSettleMs: 0 };
 
+/** Real COM port: PowerShell, or the Windows API when PowerShell is missing or blocked (../powershell.js). */
+async function openSerial(port, workDir) {
+  // Lazy: ../winapi needs koffi, only on Windows
+  if (!powerShellAvailable()) return require('../winapi').NativeSerialTransport.open(port);
+  try {
+    return await PowerShellSerialTransport.open(port, workDir);
+  } catch (err) {
+    if (fallBackIfUnlaunchable(err)) return require('../winapi').NativeSerialTransport.open(port);
+    throw err;
+  }
+}
+
 /** Opens the port (or the injected transport), runs `fn(protocol)` and always closes it. */
 function onPort({ port, workDir, openTransport, protocolOpts }, fn) {
   return withPort(port, async () => {
     const t = openTransport ? await openTransport(port)
       : isSimPort(port) ? simulatorFor(String(port).toUpperCase())
-      : await PowerShellSerialTransport.open(port, workDir);
+      : await openSerial(port, workDir);
     try {
       return await fn(new HkaProtocol(t, { ...(isSimPort(port) ? NO_SETTLE : {}), ...protocolOpts }));
     } finally {
