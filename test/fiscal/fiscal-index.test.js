@@ -60,19 +60,26 @@ test('puertos COM: la HKA (VID_04D8&PID_000A) primero', () => {
   assert.deepEqual(ports.map(p => [p.port, p.likelyHka]), [['COM10', true], ['COM1', false], ['COM3', false]]);
 });
 
-test('modo simulador: el puerto SIM1 numera seguido entre operaciones', async () => {
+test('modo simulador: el puerto SIM1 numera seguido entre operaciones y entre reinicios', async () => {
   const { execFileSync } = require('node:child_process');
-  const out = execFileSync(process.execPath, ['-e', `
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const state = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fiscal-sim-')), 'state.json');
+  const run = () => JSON.parse(execFileSync(process.execPath, ['-e', `
     const f = require('./src/fiscal');
     (async () => {
       const doc = { items: [{ description: 'Café', quantity: 1, unitPrice: 50, taxRate: 16 }], payments: [{ code: '01', amount: 50 }] };
       const a = await f.emitFiscalInvoice({ port: 'SIM1', document: doc });
       const b = await f.emitFiscalInvoice({ port: 'SIM1', document: doc });
       const st = await f.readFiscalStatus({ port: 'SIM1' });
-      console.log(JSON.stringify([a.number, b.number, st.lastInvoice, (await f.listSerialPorts())[0].port]));
+      const st2 = await f.readFiscalStatus({ port: 'SIM2' });
+      console.log(JSON.stringify([a.number, b.number, st.lastInvoice, (await f.listSerialPorts())[0].port, st.serial, st2.serial]));
     })();
-  `], { env: { ...process.env, RONDAPP_FISCAL_SIMULATOR: '1' }, cwd: require('node:path').join(__dirname, '../..') }).toString().trim();
-  assert.deepEqual(JSON.parse(out), [1, 2, 2, 'SIM1']);
+  `], { env: { ...process.env, RONDAPP_FISCAL_SIMULATOR: '1', RONDAPP_FISCAL_SIM_STATE: state }, cwd: path.join(__dirname, '../..') }).toString().trim());
+  assert.deepEqual(run(), [1, 2, 2, 'SIM1', 'Z1F1234567', 'Z1F1234568']);
+  // Un simulador reiniciado no repite números: el backend rechazaría la factura (número de control único)
+  assert.deepEqual(run().slice(0, 3), [3, 4, 4]);
 });
 
 test('readFiscalStatus: el último Z sale bien aunque el firmware tenga el orden de S1 del manual v8.3', async () => {

@@ -3,6 +3,9 @@
  * List COM ports, read the printer status/identity (read-only), emit invoices and run the X/Z reports.
  * One operation per port at a time: a serial port cannot be shared and HKA commands must not interleave.
  */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { HkaProtocol, FiscalProtocolError } = require('./hka/protocol');
 const { emitInvoice, emitCreditNote, FiscalEmitError } = require('./hka/invoice');
 const { parseSV, parseS1, parseU0X, igtfModeOf, withZCounter, swapZ } = require('./hka/parsers');
@@ -16,15 +19,38 @@ const { HkaSimulator } = require('./hka/simulator');
  * Simulator mode (RONDAPP_FISCAL_SIMULATOR=1): the bridge offers "SIM1" (an HKA-80 without IGTF, flag 50 =
  * 00) and "SIM2" (in IGTF mode, flag 50 = 01: foreign-currency payments 20–24 charge 3 %, documents close
  * with 199) that behave like the printer in memory, so the whole flow (POS → extension → bridge → backend)
- * can be tested without a printer, on any OS. The simulated printers keep their counters while the bridge runs.
+ * can be tested without a printer, on any OS. Each simulated printer has its own serial and its counters are
+ * saved in RONDAPP_FISCAL_SIM_STATE (default ~/.rondapp-fiscal-sim.json): a real printer never repeats a number,
+ * and a restarted simulator that did would collide with the invoices the backend already registered.
  */
 const SIMULATOR = process.env.RONDAPP_FISCAL_SIMULATOR === '1';
+const SIM_STATE_FILE = process.env.RONDAPP_FISCAL_SIM_STATE || path.join(os.homedir(), '.rondapp-fiscal-sim.json');
+const SIM_SERIALS = { SIM1: 'Z1F1234567', SIM2: 'Z1F1234568' };
 const simulators = new Map();
+
+function readSimState() {
+  try { return JSON.parse(fs.readFileSync(SIM_STATE_FILE, 'utf8')) || {}; } catch { return {}; }
+}
+
+function saveSimState() {
+  const state = {};
+  for (const [port, sim] of simulators) state[port] = { lastInvoice: sim.lastInvoice, lastCreditNote: sim.lastCreditNote };
+  try { fs.writeFileSync(SIM_STATE_FILE, JSON.stringify({ ...readSimState(), ...state }, null, 2)); } catch { /* best effort */ }
+}
+
 function simulatorFor(port) {
-  if (!simulators.has(port)) simulators.set(port, new HkaSimulator({ lastInvoice: 0, igtfMode: port === 'SIM2' }));
+  if (!simulators.has(port)) {
+    const saved = readSimState()[port] || {};
+    simulators.set(port, new HkaSimulator({
+      serial: SIM_SERIALS[port] || `Z1F${String(port).replace(/\D/g, '').padStart(7, '0')}`,
+      lastInvoice: saved.lastInvoice ?? 0,
+      lastCreditNote: saved.lastCreditNote ?? 0,
+      igtfMode: port === 'SIM2',
+    }));
+  }
   const sim = simulators.get(port);
   // The protocol closes the transport after each operation: the simulated printer (and its counters) must survive it
-  return { write: (bytes) => sim.write(bytes), read: (ms) => sim.read(ms), close: async () => {} };
+  return { write: (bytes) => sim.write(bytes), read: (ms) => sim.read(ms), close: async () => saveSimState() };
 }
 const isSimPort = (port) => SIMULATOR && /^SIM\d+$/i.test(String(port));
 
